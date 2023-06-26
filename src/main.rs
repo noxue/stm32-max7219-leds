@@ -1,88 +1,151 @@
+#![deny(unsafe_code)]
 #![no_std]
 #![no_main]
 
-// pick a panicking behavior
-use cortex_m::asm;
-use cortex_m_rt::entry;
 use panic_halt as _;
-use stm32f1::stm32f103;
 
-macro_rules! write_max7219_byte {
-    ($io:expr, $data:expr) => {
-        let gpiob = $io;
-        gpiob.bsrr.write(|w| w.br6().set_bit());
-        let data = $data;
-        for i in 0..8 {
-            // CLK = 0;
-            gpiob.bsrr.write(|w| w.br5().set_bit());
-            if data << i & 0x80 == 1 {
-                // DIN = 1;
-                gpiob.bsrr.write(|w| w.bs7().set_bit());
-            } else {
-                // DIN = 0;
-                gpiob.bsrr.write(|w| w.br7().set_bit());
-            }
-            // CLK = 1;
-            gpiob.bsrr.write(|w| w.bs5().set_bit());
-        }
-        gpiob.bsrr.write(|w| w.bs6().set_bit());
+use nb::block;
+
+use cortex_m_rt::entry;
+use stm32f1xx_hal::{pac, prelude::*, timer::Timer, time::Hz};
+
+/*
+void Init_MAX7219(void)
+{
+ Write_Max7219(0x09, 0x00);       //译码方式：BCD码
+ Write_Max7219(0x0a, 0x03);       //亮度
+ Write_Max7219(0x0b, 0x07);       //扫描界限；8个数码管显示
+ Write_Max7219(0x0c, 0x01);       //掉电模式：0，普通模式：1
+ Write_Max7219(0x0f, 0x00);       //显示测试：1；测试结束，正常显示：0
+} */
+// 初始化max7219
+macro_rules! init_max7219 {
+    ($clk:expr, $cs:expr, $din:expr) => {
+        //0x00-0x08 设置为0
+        // for i in 0..=8 {
+        //     write_max7219!($clk, $cs, $din, i, 0x00);
+        // }
+        write_max7219!($clk, $cs, $din, 0x09, 0x00);
+        write_max7219!($clk, $cs, $din, 0x0a, 0x05);
+        write_max7219!($clk, $cs, $din, 0x0b, 0x07);
+        write_max7219!($clk, $cs, $din, 0x0c, 0x01);
+        write_max7219!($clk, $cs, $din, 0x0f, 0x00);
     };
 }
 
 macro_rules! write_max7219 {
-    ($gpio:expr,$addr:expr,$data:expr) => {
-        // cs = 0;
-        let gpiob = $gpio;
-        gpiob.bsrr.write(|w| w.br6().set_bit());
-        write_max7219_byte!($gpio, $addr);
-        write_max7219_byte!($gpio, $data);
-        // cs = 1;
-        gpiob.bsrr.write(|w| w.bs6().set_bit());
+    ($clk:expr, $cs:expr, $din:expr, $addr:expr, $data:expr) => {
+        $cs.set_low();
+        for i in 0..8 {
+            $clk.set_low();
+            if $addr << i & 0x80 == 0x80 {
+                $din.set_high();
+            } else {
+                $din.set_low();
+            }
+            $clk.set_high();
+        }
+        
+        for i in 0..8 {
+            $clk.set_low();
+            if $data << i & 0x80 == 0x80 {
+                $din.set_high();
+            } else {
+                $din.set_low();
+            }
+            $clk.set_high();
+        }
+        $cs.set_high();
     };
 }
 
-// 电路接线
-// clk  pb5
-// cs   pb6
-// din  pb7
-
 #[entry]
 fn main() -> ! {
-    let peripherals = stm32f103::Peripherals::take().unwrap();
-    let gpioc = &peripherals.GPIOC;
-    let gpiob = &peripherals.GPIOB;
+    // Get access to the core peripherals from the cortex-m crate
+    let cp = cortex_m::Peripherals::take().unwrap();
+    // Get access to the device specific peripherals from the peripheral access crate
+    let dp = pac::Peripherals::take().unwrap();
+    
+    
 
-    let rcc = &peripherals.RCC;
 
-    // 允许所有gpio口时钟
-    rcc.apb2enr.write(|w| {
-        w.iopcen().set_bit();
-        w.iopben().set_bit()
-    });
+    // Take ownership over the raw flash and rcc devices and convert them into the corresponding
+    // HAL structs
+    let mut flash = dp.FLASH.constrain();
+    let rcc = dp.RCC.constrain();
 
-    gpioc.crh.write(|w| {
-        w.mode13().bits(0b11);
-        w.cnf13().bits(0b00)
-    });
+// 指定时钟频率
 
-    gpiob
-        .crl
-        .write(|w| unsafe { w.bits(0b0011_0011_0011_0000_0000_0000_0000_0000) });
+    // Freeze the configuration of all the clocks in the system and store the frozen frequencies in
+    // `clocks`
+    let clocks = rcc.cfgr.sysclk(Hz(8000000)).freeze(&mut flash.acr);
 
-    for i in 0..9 {
-        write_max7219!(gpiob, i, 0x00);
-    }
-    write_max7219!(gpiob, 0x09, 0x00); //译码方式：BCD码
-    write_max7219!(gpiob, 0x0a, 0x03); //亮度
-    write_max7219!(gpiob, 0x0b, 0x07); //扫描界限；8个数码管显示
-    write_max7219!(gpiob, 0x0c, 0x01); //掉电模式：0，普通模式：1
-    write_max7219!(gpiob, 0x0f, 0x01); //显示测试：1；测试结束，正常显示：0
-                                       // write_max7219!(gpiob, 0x01, 0xff);
+    // Acquire the GPIOC peripheral
+    let mut gpioc = dp.GPIOC.split();
+    let mut gpiob = dp.GPIOB.split();
+
+    // Configure gpio C pin 13 as a push-pull output. The `crh` register is passed to the function
+    // in order to configure the port. For pins 0-7, crl should be passed instead.
+    let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh);
+    // Configure the syst timer to trigger an update every second
+    let mut timer = Timer::syst(cp.SYST, &clocks).counter_hz();
+    timer.start(20.Hz()).unwrap();
+
+    // // 电路接线
+    // // clk  pb5
+    // // cs   pb6
+    // // din  pb7
+
+    let mut clk = gpiob.pb5.into_push_pull_output(&mut gpiob.crl);
+    let mut cs = gpiob.pb6.into_push_pull_output(&mut gpiob.crl);
+    let mut din = gpiob.pb7.into_push_pull_output(&mut gpiob.crl);
+
+    // block!(timer.wait()).unwrap();
+
+    // 初始化max7219
+    init_max7219!(clk, cs, din);
+
+    let data = [
+        0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xCE, 0xD6, 0xD6, // -0-.
+        0xE6, 0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x38, 0x78, 0x18, 0x18,
+        0x18, // -1-
+        0x18, 0x18, 0x18, 0x7E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0xC6, 0x06, 0x0C, 0x18,
+        0x30, // -2-
+        0x60, 0xC0, 0xC6, 0xFE, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0xC6, 0x06, 0x06, 0x3C,
+        0x06, // -3-
+        0x06, 0x06, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x1C, 0x3C, 0x6C, 0xCC,
+        0xFE, // -4-
+        0x0C, 0x0C, 0x0C, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0xC0, 0xC0, 0xC0, 0xFC,
+        0x0E, // -5-
+        0x06, 0x06, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x60, 0xC0, 0xC0, 0xFC,
+        0xC6, // -6-
+        0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0xC6, 0x06, 0x06, 0x0C,
+        0x18, // -7-
+        0x30, 0x30, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0x7C,
+        0xC6, // -8-
+        0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0x7E,
+        0x06, // -9-
+        0x06, 0x06, 0x0C, 0x78, 0x00, 0x00, 0x00, 0x00u8,
+    ];
+    // Wait for the timer to trigger an update and change the state of the LED
+
+    let size = data.len();
+    let mut pos = 0;
+    let mut j = 0;
 
     loop {
-        for i in 1..9 {
-            write_max7219!(gpiob, i, 0x00);
-            asm::delay(1000000);
+        
+        for i in 0..8usize {
+            j = (pos + i) % size;
+            write_max7219!(clk, cs, din, (i + 1) as u8, data[j]);
         }
+        pos = (pos + 1) % size;
+
+        block!(timer.wait()).unwrap();
+
+        // block!(timer.wait()).unwrap();
+        // led.set_high();
+        // block!(timer.wait()).unwrap();
+        // led.set_low();
     }
 }
