@@ -9,22 +9,14 @@ use nb::block;
 use cortex_m_rt::entry;
 use stm32f1xx_hal::{pac, prelude::*, timer::Timer, time::Hz};
 
-/*
-void Init_MAX7219(void)
-{
- Write_Max7219(0x09, 0x00);       //译码方式：BCD码
- Write_Max7219(0x0a, 0x03);       //亮度
- Write_Max7219(0x0b, 0x07);       //扫描界限；8个数码管显示
- Write_Max7219(0x0c, 0x01);       //掉电模式：0，普通模式：1
- Write_Max7219(0x0f, 0x00);       //显示测试：1；测试结束，正常显示：0
-} */
+
 // 初始化max7219
 macro_rules! init_max7219 {
     ($clk:expr, $cs:expr, $din:expr) => {
         //0x00-0x08 设置为0
-        // for i in 0..=8 {
-        //     write_max7219!($clk, $cs, $din, i, 0x00);
-        // }
+        for i in 0..=8 {
+            write_max7219!($clk, $cs, $din, i, 0x00);
+        }
         write_max7219!($clk, $cs, $din, 0x09, 0x00);
         write_max7219!($clk, $cs, $din, 0x0a, 0x05);
         write_max7219!($clk, $cs, $din, 0x0b, 0x07);
@@ -78,7 +70,7 @@ fn main() -> ! {
 
     // Freeze the configuration of all the clocks in the system and store the frozen frequencies in
     // `clocks`
-    let clocks = rcc.cfgr.sysclk(Hz(8000000)).freeze(&mut flash.acr);
+    let clocks = rcc.cfgr.freeze(&mut flash.acr);
 
     // Acquire the GPIOC peripheral
     let mut gpioc = dp.GPIOC.split();
