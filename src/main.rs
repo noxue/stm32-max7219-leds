@@ -68,13 +68,23 @@ impl<
         self.cs.set_high();
     }
 
+    /// block 指定要写入第几块，从 1 开始
     pub fn write_block(&mut self, block: u8, addr: u8, data: u8) {
+
+        assert!(block <= self.blocks);
         self.cs.set_low();
+
+        // 让 第 block 块之后的led 不工作
+        for _ in block..self.blocks {
+            self.write_byte(0x00);
+            self.write_byte(0x00);
+        }
 
         self.write_byte(addr);
         self.write_byte(data);
 
         // 写到第 n 块 就写 n-1 次 16位数据，把前面的数据推到第 n 块 led上
+        // 让第 block 块之前的 led 不工作
         for _ in 1..block {
             self.write_byte(0x00);
             self.write_byte(0x00);
@@ -98,14 +108,14 @@ impl<
     // test on
     pub fn test(&mut self) {
         for i in 0..self.blocks {
-            self.write_block(i, 0x0f, 0x01);
+            self.write_block(i+1, 0x0f, 0x01);
         }
     }
 
     // test off
     pub fn test_off(&mut self) {
         for i in 0..self.blocks {
-            self.write_block(i, 0x0f, 0x00);
+            self.write_block(i+1, 0x0f, 0x00);
         }
     }
 }
@@ -140,7 +150,15 @@ fn main() -> ! {
     block!(timer.wait()).unwrap();
     leds.test_off();
 
+    let data = [0b1, 0b11, 0b1111,  0b11111];
     loop {
-        leds.write_block(3, 2, 3);
+        
+        for i in  0..4{
+            for j in 0..8{
+                leds.write_block(i+1, j+1, data[i as usize] << j);
+            }
+        }
+    
+
     }
 }
